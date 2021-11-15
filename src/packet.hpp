@@ -28,28 +28,12 @@ class Packet {
   struct ether_header *ethernet_header;
 
 public:
-  // constractor
   Packet(u_char *packet, int len, int ip_hdr_start);
 
   // data link layer
   struct ether_addr *src_ether_addr(), *dst_ether_addr();
   long long src_ether_addr_ll();
   long long dst_ether_addr_ll();
-
-  // ip layer
-  struct iphdr *ip_header;
-
-  // transport layer
-  unsigned short src_port(), dst_port();
-  struct tcphdr *tcp_header;
-  struct udphdr *udp_header;
-  bool is_tcp, is_udp;
-
-  // app layer
-  const u_char *payload;
-
-  // create new packet
-  void create_new_packet_with_tag(u_char *buf, int tag);
 
   // print packet
   void print_meta_data();

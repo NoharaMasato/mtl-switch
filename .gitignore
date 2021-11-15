@@ -3,6 +3,7 @@
 *.d
 *.swp
 *.out
+*.log
 __pycache__
 
 src/mtl-switch

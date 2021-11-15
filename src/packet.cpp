@@ -4,9 +4,7 @@ Packet::Packet(u_char *packet, int len, int ip_hdr_start) {
   data_buffer = packet;
   pkt_len = len;
   header_size = ip_hdr_start + IP_HEADER_SIZE;
-  is_tcp = false;
 
-  // parse ethernet header
   ethernet_header = (struct ether_header *)packet;
 }
 
@@ -43,11 +41,12 @@ long long Packet::dst_ether_addr_ll() {
 }
 
 void Packet::print_meta_data() {
-        std::cout << "\n\n=====packet start=====\n"
-                  << "packet length " << pkt_len << "\n"
-                  << "src mac       " << ether_ntoa(src_ether_addr()) << "\n"
-                  << "dst mac       " << ether_ntoa(dst_ether_addr()) << "\n"
-                  << "=====packet end=======\n";
+  std::cout << "\n\n=====packet start=====\n"
+            << "packet length " << pkt_len << "\n"
+            << "src mac       " << ether_ntoa(src_ether_addr()) << "\n"
+            << "dst mac       " << ether_ntoa(dst_ether_addr()) << "\n"
+            << "=====packet end======="
+            << std::endl;
 }
 
 void Packet::print_row_data() {

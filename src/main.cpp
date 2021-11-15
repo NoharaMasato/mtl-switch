@@ -26,16 +26,13 @@ EthernetDevice DEVICE[MAX_DEVICE_CNT];
 int device_cnt, EndFlag = 0;
 long long int total_packet_size = 0;
 std::unordered_map<long long int, int> mac_to_port;
-pthread_mutex_t mutex_main, mutex_buf, mutex_piggyback;
+pthread_mutex_t mutex_main, mutex_buf, mutex_log;
 threadpool thpool = thpool_init(THREAD_POOL_SIZE);
 
 packet_buf p_buf[MAX_BUF_SIZE];
 int buf_used_cnt = 0;
 
-// ファイル間で共通の変数でconfig.hppにextern宣言されているので、他のファイルでも同じ変数を参照可能
 std::string switch_name;
-int switch_id;
-std::unordered_map<int, std::vector<u_int8_t>> PIGGYBACK_INFO;
 
 int get_next_buf_idx() {
   static int idx;
@@ -61,6 +58,10 @@ void packet_forward(void *arg){
   ip_header_start = DEVICE[p_buf[p_buf_idx].port_idx].device_type == ETHERNET? ETHERNET_HEADER_SIZE : 4;
   Packet pkt(p_buf[p_buf_idx].buf, p_buf[p_buf_idx].size, ip_header_start); // bufのデータを整形している
 
+  pthread_mutex_lock(&mutex_log);
+  pkt.print_meta_data();
+  pthread_mutex_unlock(&mutex_log);
+
   pthread_mutex_lock(&mutex_main);
   mac_to_port[pkt.src_ether_addr_ll()] = p_buf[p_buf_idx].port_idx + 1; // 0をportを学習していないとするため、ポート番号は1から始める
   pthread_mutex_unlock(&mutex_main);
@@ -84,8 +85,7 @@ void packet_forward(void *arg){
   pthread_mutex_unlock(&mutex_buf);
 }
 
-int Bridge()
-{
+void Switch() {
   struct pollfd	targets[MAX_DEVICE_CNT];
   int	nready, i, size, p_buf_idx;
 
@@ -121,7 +121,6 @@ int Bridge()
         break;
     }
   }
-  return(0);
 }
 
 void EndSignal(int sig __attribute__((unused))) {
@@ -138,13 +137,12 @@ int main(int argc, char *argv[]) {
   }
 
   switch_name = argv[1];
-  switch_id = stoi(switch_name.substr(1));
 
   device_cnt = get_all_ethernet_device(switch_name, DEVICE);
 
   pthread_mutex_init(&mutex_main, NULL);
   pthread_mutex_init(&mutex_buf, NULL);
-  pthread_mutex_init(&mutex_piggyback, NULL);
+  pthread_mutex_init(&mutex_log, NULL);
 
   start = std::chrono::system_clock::now();
 
@@ -152,9 +150,9 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM,EndSignal);
   signal(SIGQUIT,EndSignal);
 
-  std::cout << "[Flow Management Switch start]" << std::endl;
+  std::cout << "[Multi-Thread Learning Switch start]" << std::endl;
 
-  Bridge();
+  Switch();
 
   end = std::chrono::system_clock::now();
   time = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(end - start) .count() / 1000.0);
