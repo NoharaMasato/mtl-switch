@@ -6,7 +6,7 @@ from mininet.node import Switch, Host, NullController
 import os
 
 
-HOST_NUM=10
+HOST_NUM=30
 BASE_PATH = os.path.join(os.path.dirname(__file__), "..")
 SWITCH_EXEC_FILE = os.path.join(BASE_PATH, "src/mtl-switch")
 LOG_DIR = os.path.join(BASE_PATH, "mininet/log/")

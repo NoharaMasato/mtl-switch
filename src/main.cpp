@@ -20,6 +20,8 @@ extern "C"{
 #define THREAD_POOL_SIZE 4
 #define MAX_BUF_SIZE 1000
 
+#define PRINT_DEBUG 1
+
 // [TODO] 複数スレッドで同じ変数を書き換え、読み込みをするときに読み込む方のスレッドでlockは必要？
 
 EthernetDevice DEVICE[MAX_DEVICE_CNT];
@@ -58,9 +60,11 @@ void packet_forward(void *arg){
   ip_header_start = DEVICE[p_buf[p_buf_idx].port_idx].device_type == ETHERNET? ETHERNET_HEADER_SIZE : 4;
   Packet pkt(p_buf[p_buf_idx].buf, p_buf[p_buf_idx].size, ip_header_start); // bufのデータを整形している
 
-  pthread_mutex_lock(&mutex_log);
-  pkt.print_meta_data();
-  pthread_mutex_unlock(&mutex_log);
+  if (PRINT_DEBUG) {
+    pthread_mutex_lock(&mutex_log);
+    pkt.print_meta_data();
+    pthread_mutex_unlock(&mutex_log);
+  }
 
   pthread_mutex_lock(&mutex_main);
   mac_to_port[pkt.src_ether_addr_ll()] = p_buf[p_buf_idx].port_idx + 1; // 0をportを学習していないとするため、ポート番号は1から始める
@@ -90,13 +94,13 @@ void Switch() {
   int	nready, i, size, p_buf_idx;
 
   for (int i = 0; i < device_cnt; i++) {
-    targets[i].fd=DEVICE[i].msoc.sd;
-    targets[i].events=POLLIN|POLLERR;
+    targets[i].fd = DEVICE[i].msoc.sd;
+    targets[i].events = POLLIN|POLLERR;
   }
   std::cout << "device_cnt: " << device_cnt << std::endl;
 
-  while(EndFlag==0){
-    switch(nready=poll(targets,device_cnt,100)){ // pollの引数: fdの配列, fdの数, timeout(ms)
+  while(EndFlag == 0){
+    switch(nready = poll(targets, device_cnt, 100)){ // pollの引数: fdの配列, fdの数, timeout(ms)
       case	-1:
         if(errno!=EINTR){
           perror("poll");
@@ -136,6 +140,7 @@ int main(int argc, char *argv[]) {
     exit(1);
   }
 
+  // 引数をインターフェース名にしたい
   switch_name = argv[1];
 
   device_cnt = get_all_ethernet_device(switch_name, DEVICE);
@@ -150,7 +155,7 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM,EndSignal);
   signal(SIGQUIT,EndSignal);
 
-  std::cout << "[Multi-Thread Learning Switch start]" << std::endl;
+  std::cout << "Multi-Thread Learning Switch start" << std::endl;
 
   Switch();
 
