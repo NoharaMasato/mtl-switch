@@ -1,0 +1,8 @@
+.vscode
+*.o
+*.d
+*.swp
+*.out
+__pycache__
+
+src/mtl-switch

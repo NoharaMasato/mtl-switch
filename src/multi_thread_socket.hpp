@@ -3,8 +3,7 @@
 
 #include <unistd.h>
 #include "pthread.h"
-
-#include "config.hpp"
+#include "packet.hpp"
 
 class MultiThreadSocket {
   pthread_mutex_t mutex;

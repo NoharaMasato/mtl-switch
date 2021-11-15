@@ -5,27 +5,24 @@
 #include <arpa/inet.h>
 #include "pthread.h"
 
-#include <chrono>
 #include <iostream>
 #include <string>
 #include <unordered_map>
+#include <chrono>
 
-#include "config.hpp"
 #include "eth_device.hpp"
 #include "packet.hpp"
-#include "redis.hpp"
-#include "checksum.hpp"
-#include "response.hpp"
-#include "controller_client.hpp"
-#include "log.hpp"
 extern "C"{
   #include "thpool.h"
 }
 
+#define MAX_DEVICE_CNT 100
+#define THREAD_POOL_SIZE 4
+#define MAX_BUF_SIZE 100
+
 // [TODO] 複数スレッドで同じ変数を書き換え、読み込みをするときに読み込む方のスレッドでlockは必要？
 
 EthernetDevice DEVICE[MAX_DEVICE_CNT];
-enum ACTION { FORWARD, DROP, ANONYMIZE, FORWARD_PACKET, PIGGY_BACK }; // 3は許可されているプラス先行パケットを作成して送る, 4はpiggybackして送る
 int device_cnt, EndFlag = 0;
 long long int total_packet_size = 0;
 std::unordered_map<long long int, int> mac_to_port;
@@ -58,11 +55,9 @@ int get_next_buf_idx() {
 
 void packet_forward(void *arg){
   int p_buf_idx = (long long int)(arg);
-  ACTION action;
-  int ip_header_start, flow_id, outport;
+  int ip_header_start, outport;
   std::string redis_flow_id_ret, redis_action_ret;
 
-  action = FORWARD; // デフォルトはFoward
   ip_header_start = DEVICE[p_buf[p_buf_idx].port_idx].device_type == ETHERNET? ETHERNET_HEADER_SIZE : 4;
   Packet pkt(p_buf[p_buf_idx].buf, p_buf[p_buf_idx].size, ip_header_start); // bufのデータを整形している
 
@@ -70,75 +65,17 @@ void packet_forward(void *arg){
   mac_to_port[pkt.src_ether_addr_ll()] = p_buf[p_buf_idx].port_idx + 1; // 0をportを学習していないとするため、ポート番号は1から始める
   pthread_mutex_unlock(&mutex_main);
 
-  if (MANAGE_FLOW && pkt.is_tcp){
-
-    if (!pkt.tag.is_attached) { // tagがなかったら新しいパケットを作り、tagをつけて、送信する
-      redis_flow_id_ret = select_string(pkt.to_five_tuple().to_string());
-      if (redis_flow_id_ret.size() == 0) {
-        redis_flow_id_ret = select_string(pkt.to_4tuple_string());
-      }
-      if (redis_flow_id_ret.size()) { // tagテーブルにある場合のみtagをつける
-        flow_id = std::stoi(redis_flow_id_ret);
-        // [TODO] ここでサイズによって、piggybackか先行パケットかを決める
-        pkt.attach_tag(flow_id);
-        p_buf[p_buf_idx].size += TAG_SIZE;
-      }
-      // tagをつけるときもつけないときもchecksumを計算し直す
-      recaluculate_checksum(&pkt);
-    }
-
-    if (pkt.tag.is_attached) { // tagがある場合のみactionを検索する（tagがない場合にはそのままforwardする）
-      // piggybackの中に自分のswitch idがあれば、その情報をテーブルに入れる
-      for (int a_id : pkt.tag.allowed_switch_ids){
-        if (a_id == switch_id) { // piggybackの中に自分のswitch idが入っていたら
-          insert_flow_table(pkt.tag.flow_id, "0");
-        }
-      }
-      redis_action_ret = select_string(std::to_string(pkt.tag.flow_id)); // tagを元にflowテーブルからactionを検索する
-      if (redis_action_ret.size()) { // flowテーブルにデータがある場合
-        action = (ACTION)std::stoi(redis_action_ret);
-      } else { // flowテーブルにtagに関するエントリがない場合はコントローラにたづねて、その結果をフローテーブルに入れる
-        send_message(std::to_string(pkt.tag.flow_id));
-        MYCOUT << "Ask to controller about tag: " << pkt.tag.flow_id;
-        while (true) { // injectionのスレッドが、redisに値を入れてくれるのを待つ
-          redis_action_ret = select_string(std::to_string(pkt.tag.flow_id));
-          if (redis_action_ret.size()) { // redisに値があった場合はループから抜ける
-            action = (ACTION)std::stoi(redis_action_ret);
-            break;
-          }
-        }
+  pthread_mutex_lock(&mutex_main);
+  outport = mac_to_port[pkt.dst_ether_addr_ll()];
+  pthread_mutex_unlock(&mutex_main);
+  if (outport != 0) {
+    DEVICE[outport - 1].msoc.mwrite(p_buf[p_buf_idx].buf, p_buf[p_buf_idx].size); // outportは0-indexedにしている
+  } else { // dstのmacをまだ学習していない場合はFLODDする
+    for (int j = 0; j < device_cnt; j++) {
+      if (j != p_buf[p_buf_idx].port_idx) { // inportには送信しない
+        DEVICE[j].msoc.mwrite(p_buf[p_buf_idx].buf, p_buf[p_buf_idx].size);
       }
     }
-    // コントローラから帰ってきたallowed_switchの情報はそのスイッチではpkt.tagに反映されない
-    MYCOUT << "packet: " << pkt.to_five_tuple().to_string()
-           << ", flow_id: " << pkt.tag.flow_id
-           << ", allowed_switches: " << pkt.tag.allowed_switch_string()
-           << ", action: " << action
-           << ", len: " << ntohs(pkt.ip_header->tot_len) << " : " << p_buf[p_buf_idx].size;
-  }
-
-  if (action == PIGGY_BACK) { // piggybackの場合は転送の前にpiggyback情報を負荷する
-    pthread_mutex_lock(&mutex_piggyback);
-    pkt.add_allowed_switch_to_tag(PIGGYBACK_INFO[pkt.tag.flow_id]);
-    PIGGYBACK_INFO[pkt.tag.flow_id] = {}; // 一度piggybackをしたら、次のパケットはpiggybackしなくていいので、この配列をからにする
-    pthread_mutex_unlock(&mutex_piggyback);
-  }
-
-  if (action == FORWARD || action == PIGGY_BACK) {
-    pthread_mutex_lock(&mutex_main);
-    outport = mac_to_port[pkt.dst_ether_addr_ll()];
-    pthread_mutex_unlock(&mutex_main);
-    if (outport != 0) {
-      DEVICE[outport - 1].msoc.mwrite(p_buf[p_buf_idx].buf, p_buf[p_buf_idx].size); // outportは0-indexedにしている
-    } else { // dstのmacをまだ学習していない場合はFLODDする
-      for (int j = 0; j < device_cnt; j++) {
-        if (j != p_buf[p_buf_idx].port_idx) { // inportには送信しない
-          DEVICE[j].msoc.mwrite(p_buf[p_buf_idx].buf, p_buf[p_buf_idx].size);
-        }
-      }
-    }
-  } else if (action == DROP) { // dropなので何もしない
-  } else if (action == FORWARD_PACKET) { // 先行パケットを送信してから転送するパケットを送信する
   }
 
   pthread_mutex_lock(&mutex_buf);
@@ -217,24 +154,18 @@ int main(int argc, char *argv[]) {
 
   std::cout << "[Flow Management Switch start]" << std::endl;
 
-  if (init_socket(CONTROLLER_IP) == -1) {
-    std::cerr << " : [Controller Connection Faild]" << std::endl;
-  }
-  pthread_t pthread;
-  pthread_create(&pthread, NULL, &cache_injection, NULL);
-
   Bridge();
 
   end = std::chrono::system_clock::now();
   time = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(end - start) .count() / 1000.0);
 
-  MYCOUT << "=====report====="
-         << "\n"
-         << "パケット処理量:" << total_packet_size / 1e9 * 8 << "[Gb]\n"
-         << "処理時間" << time << " [ms]\n"
-         << "スループット" << total_packet_size / time / 1e6 * 8
-         << " [Gbps]\n"
-         << "================";
+  std::cout << "=====report====="
+            << "\n"
+            << "パケット処理量:" << total_packet_size / 1e9 * 8 << "[Gb]\n"
+            << "処理時間" << time << " [ms]\n"
+            << "スループット" << total_packet_size / time / 1e6 * 8
+            << " [Gbps]\n"
+            << "================";
 
   return 0;
 }
