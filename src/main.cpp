@@ -18,7 +18,7 @@ extern "C"{
 
 #define MAX_DEVICE_CNT 100
 #define THREAD_POOL_SIZE 4
-#define MAX_BUF_SIZE 100
+#define MAX_BUF_SIZE 1000
 
 // [TODO] 複数スレッドで同じ変数を書き換え、読み込みをするときに読み込む方のスレッドでlockは必要？
 
